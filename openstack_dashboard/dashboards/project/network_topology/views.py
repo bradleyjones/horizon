@@ -51,29 +51,51 @@ class JSONView(View):
     def get(self, request, *args, **kwargs):
         data = {}
         # Get nova data
-        novaclient = api.nova.novaclient(request)
-        servers = novaclient.servers.list()
+        try:
+            novaclient = api.nova.novaclient(request)
+            servers = novaclient.servers.list()
+        except:
+            servers = []
         data['servers'] = [{'name': server.name,
                             'status': server.status,
                             'id': server.id} for server in servers]
         self.add_resource_url('horizon:project:instances:detail',
                               data['servers'])
+
         # Get quantum data
-        quantumclient = api.quantum.quantumclient(request)
-        networks = quantumclient.list_networks()
-        subnets = quantumclient.list_subnets()
-        ports = quantumclient.list_ports()
-        routers = quantumclient.list_routers()
-        data['networks'] = sorted(networks.get('networks', []),
+        try:
+            quantumclient = api.quantum.quantumclient(request)
+            quantumnetworks = quantumclient.list_networks().get('networks', [])
+            subnets = quantumclient.list_subnets().get('subnets', [])
+            ports = quantumclient.list_ports().get('ports', [])
+            quantumrouters = quantumclient.list_routers().get('routers', [])
+        except:
+            quantumnetworks = []
+            subnets = []
+            ports = []
+            quantumrouters = []
+
+        networks = []
+        for net in quantumnetworks:
+            if (net['router:external'] is True or
+                        net['shared'] is True or
+                        net['tenant_id'] == request.user.tenant_id):
+                networks.append(net)
+
+        routers = [rout for rout in quantumrouters if
+                    rout['tenant_id'] == request.user.tenant_id]
+
+        data['networks'] = sorted(networks,
                                   key=lambda x: x.get('router:external'),
                                   reverse=True)
         self.add_resource_url('horizon:project:networks:detail',
                               data['networks'])
-        data['subnets'] = subnets.get('subnets', [])
-        data['ports'] = ports.get('ports', [])
+
+        data['subnets'] = subnets
+        data['ports'] = ports
         self.add_resource_url('horizon:project:networks:ports:detail',
                               data['ports'])
-        data['routers'] = routers.get('routers', [])
+        data['routers'] = routers
         # user can't see port on external network. so we are
         # adding fake port based on router information
         for router in data['routers']:
