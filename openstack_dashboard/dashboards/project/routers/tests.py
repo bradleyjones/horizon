@@ -21,6 +21,7 @@ from mox import IsA  # noqa
 from openstack_dashboard import api
 from openstack_dashboard.dashboards.project.routers.extensions.routerrules\
     import rulemanager
+from openstack_dashboard.dashboards.project.routers import tables
 from openstack_dashboard.test import helpers as test
 
 
@@ -50,7 +51,7 @@ class RouterTests(test.TestCase):
         api.neutron.router_list(
             IsA(http.HttpRequest),
             tenant_id=self.tenant.id,
-            search_opts=None).AndReturn(self.routers.list())
+            search_opts=None).MultipleTimes().AndReturn(self.routers.list())
         self._mock_external_network_list()
         self.mox.ReplayAll()
 
@@ -60,12 +61,18 @@ class RouterTests(test.TestCase):
         routers = res.context['table'].data
         self.assertItemsEqual(routers, self.routers.list())
 
-    @test.create_stubs({api.neutron: ('router_list', 'network_list')})
+    @test.create_stubs({api.neutron: ('router_list',
+                                      'network_list',
+                                      'tenant_quota_get')})
     def test_index_router_list_exception(self):
         api.neutron.router_list(
             IsA(http.HttpRequest),
             tenant_id=self.tenant.id,
-            search_opts=None).AndRaise(self.exceptions.neutron)
+            search_opts=None).MultipleTimes().AndRaise(self.exceptions.neutron)
+        api.neutron.tenant_quota_get(
+            IsA(http.HttpRequest),
+            self.tenant.id).MultipleTimes() \
+                    .AndReturn(self.neutron_quotas.first())
         self._mock_external_network_list()
         self.mox.ReplayAll()
 
@@ -73,15 +80,21 @@ class RouterTests(test.TestCase):
 
         self.assertTemplateUsed(res, '%s/routers/index.html' % self.DASHBOARD)
         self.assertEqual(len(res.context['table'].data), 0)
-        self.assertMessageCount(res, error=1)
+        self.assertMessageCount(res, error=3)
 
-    @test.create_stubs({api.neutron: ('router_list', 'network_list')})
+    @test.create_stubs({api.neutron: ('router_list',
+                                      'network_list',
+                                      'tenant_quota_get')})
     def test_set_external_network_empty(self):
         router = self.routers.first()
         api.neutron.router_list(
             IsA(http.HttpRequest),
             tenant_id=self.tenant.id,
-            search_opts=None).AndReturn([router])
+            search_opts=None).MultipleTimes().AndReturn([router])
+        api.neutron.tenant_quota_get(
+            IsA(http.HttpRequest),
+            self.tenant.id).MultipleTimes() \
+                    .AndReturn(self.neutron_quotas.first())
         self._mock_external_network_list(alter_ids=True)
         self.mox.ReplayAll()
 
@@ -679,3 +692,55 @@ class RouterRuleTests(test.TestCase):
         url = reverse(self.DETAIL_PATH, args=[pre_router.id])
         res = self.client.post(url, form_data)
         self.assertNoFormErrors(res)
+
+
+class RouterViewTests(test.TestCase):
+    DASHBOARD = 'project'
+    INDEX_URL = reverse('horizon:%s:routers:index' % DASHBOARD)
+
+    def _mock_external_network_list(self, alter_ids=False):
+        search_opts = {'router:external': True}
+        ext_nets = [n for n in self.networks.list() if n['router:external']]
+        if alter_ids:
+            for ext_net in ext_nets:
+                ext_net.id += 'some extra garbage'
+        api.neutron.network_list(
+            IsA(http.HttpRequest),
+            **search_opts).AndReturn(ext_nets)
+
+    @test.create_stubs({api.neutron: ('network_list',
+                                      'router_list',
+                                      'tenant_quota_get',)})
+    def test_create_button_disabled_when_quota_exceeded(self):
+        tenant_quotas = api.base.QuotaSet()
+        tenant_quotas['router'] = 0
+
+        api.neutron.router_list(
+            IsA(http.HttpRequest),
+            tenant_id=self.tenant.id,
+            search_opts=None).MultipleTimes().AndReturn(self.routers.list())
+        api.neutron.tenant_quota_get(
+            IsA(http.HttpRequest),
+            self.tenant.id).MultipleTimes() \
+                    .AndReturn(tenant_quotas)
+        self._mock_external_network_list()
+        self.mox.ReplayAll()
+
+        res = self.client.get(self.INDEX_URL)
+        self.assertTemplateUsed(res, 'project/routers/index.html')
+
+        routers = res.context['Routers_table'].data
+        self.assertItemsEqual(routers, self.routers.list())
+
+        create_link = tables.CreateRouter()
+        url = create_link.get_link_url()
+        classes = list(create_link.get_default_classes())\
+                        + list(create_link.classes)
+        link_name = "%s (%s)" % (unicode(create_link.verbose_name),
+                                 "Quota exceeded")
+        expected_string = "<a href='%s' title='%s'  class='%s disabled' "\
+            "id='Routers__action_create'>" \
+            "<span class='glyphicon glyphicon-plus'></span>%s</a>" \
+            % (url, link_name, " ".join(classes), link_name)
+        self.assertContains(res, expected_string, html=True,
+                            msg_prefix="The create button is not disabled")

@@ -14,8 +14,10 @@
 
 from django.conf import settings
 from django.core.urlresolvers import reverse
+from django.utils.translation import string_concat  # noqa
 from django.utils.translation import ugettext_lazy as _
 
+from horizon import exceptions
 from horizon import tables
 
 from openstack_dashboard import api
@@ -62,12 +64,51 @@ class CreateGroup(tables.LinkAction):
     icon = "plus"
 
     def allowed(self, request, security_group=None):
+        networking = False
         if api.base.is_service_enabled(request, "network"):
             policy = (("network", "create_security_group"),)
+            networking = True
         else:
             policy = (("compute", "compute_extension:security_groups"),)
 
-        return POLICY_CHECK(policy, request, target={})
+        if POLICY_CHECK(policy, request, target={}):
+            sg_available = None
+
+            try:
+                if networking:
+                    limits = api.neutron.tenant_quota_get(request,
+                                                request.user.tenant_id)
+                    sg_limit = limits.get('security_group').limit
+                else:
+                    limits = api.nova.tenant_quota_get(request,
+                                                request.user.tenant_id)
+                    sg_limit = limits.get('security_groups').limit
+            except Exception:
+                msg = _('Unable to retrieve security group quota.')
+                exceptions.handle(request, msg)
+                sg_limit = 0
+
+            try:
+                sg_used = len(api.network.security_group_list(request))
+            except Exception:
+                msg = _('Unable to retrieve list of security groups.')
+                exceptions.handle(request, msg)
+                sg_used = 0
+            sg_available = sg_limit - sg_used
+
+            if sg_available <= 0 and sg_available is not None:
+                if "disabled" not in self.classes:
+                    self.classes = [c for c in self.classes] + ['disabled']
+                    self.verbose_name = string_concat(self.verbose_name, ' ',
+                                                      _("(Quota exceeded)"))
+            else:
+                self.verbose_name = _("Create Security Group")
+                classes = [c for c in self.classes if c != "disabled"]
+                self.classes = classes
+
+            return True
+        else:
+            return False
 
 
 class EditGroup(tables.LinkAction):

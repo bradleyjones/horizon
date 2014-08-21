@@ -16,6 +16,7 @@ import logging
 from django.core.urlresolvers import reverse
 from django import template
 from django.template import defaultfilters as filters
+from django.utils.translation import string_concat  # noqa
 from django.utils.translation import ugettext_lazy as _
 
 from horizon import exceptions
@@ -74,6 +75,38 @@ class CreateNetwork(tables.LinkAction):
     classes = ("ajax-modal",)
     icon = "plus"
     policy_rules = (("network", "create_network"),)
+
+    def allowed(self, request, datum=None):
+        try:
+            limits = api.neutron.tenant_quota_get(request,
+                                        request.user.tenant_id)
+            networks_limit = limits.get('network').limit
+        except Exception:
+            msg = _('Network quotas can not be retrieved.')
+            exceptions.handle(request, msg)
+            networks_limit = 0
+
+        try:
+            networks_used = len(api.neutron.network_list(request,
+                                tenant_id=request.user.tenant_id,
+                                shared=False))
+        except Exception:
+            msg = _('Network list can not be retrieved.')
+            exceptions.handle(request, msg)
+            networks_used = 0
+        networks_available = networks_limit - networks_used
+
+        if networks_available <= 0:
+            if "disabled" not in self.classes:
+                self.classes = [c for c in self.classes] + ['disabled']
+                self.verbose_name = string_concat(self.verbose_name, ' ',
+                                                  _("(Quota exceeded)"))
+        else:
+            self.verbose_name = _("Create Network")
+            classes = [c for c in self.classes if c != "disabled"]
+            self.classes = classes
+
+        return True
 
 
 class EditNetwork(CheckNetworkEditable, tables.LinkAction):

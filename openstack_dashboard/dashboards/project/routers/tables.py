@@ -16,6 +16,7 @@ import logging
 
 from django.core.urlresolvers import reverse
 from django.template import defaultfilters as filters
+from django.utils.translation import string_concat  # noqa
 from django.utils.translation import ugettext_lazy as _
 from neutronclient.common import exceptions as q_ext
 
@@ -67,6 +68,38 @@ class CreateRouter(tables.LinkAction):
     classes = ("ajax-modal",)
     icon = "plus"
     policy_rules = (("network", "create_router"),)
+
+    def allowed(self, request, datum=None):
+        try:
+            limits = api.neutron.tenant_quota_get(request,
+                                        request.user.tenant_id)
+            routers_limit = limits.get('router').limit
+        except Exception:
+            msg = _('Router quotas can not be retrieved.')
+            exceptions.handle(request, msg)
+            routers_limit = 0
+
+        try:
+            routers_used = len(api.neutron.router_list(request,
+                                            tenant_id=request.user.tenant_id,
+                                            search_opts=None))
+        except Exception:
+            msg = _('Unable to retrieve router list.')
+            exceptions.handle(request, msg)
+            routers_used = 0
+        routers_available = routers_limit - routers_used
+
+        if routers_available <= 0:
+            if "disabled" not in self.classes:
+                self.classes = [c for c in self.classes] + ['disabled']
+                self.verbose_name = string_concat(self.verbose_name, ' ',
+                                                  _("(Quota exceeded)"))
+        else:
+            self.verbose_name = _("Create Router")
+            classes = [c for c in self.classes if c != "disabled"]
+            self.classes = classes
+
+        return True
 
 
 class EditRouter(tables.LinkAction):
