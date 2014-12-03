@@ -1,24 +1,47 @@
-/* Namespace for core functionality related to Network Topology. */
+function Network(data) {
+  for (key in data) {
+    this[key] = data[key];
+  }
+  this.iconType = 'text';
+  this.icon = '\uf0c2'; // Cloud
+  this.collapsed = false;
+}
+
+function ExternalNetwork(data) {
+  for (key in data) {
+    this[key] = data[key];
+  }
+  this.iconType = 'text';
+  this.icon = '\uf0ac'; // Globe
+}
+
+function Router(data) {
+  for (key in data) {
+    this[key] = data[key];
+  }
+  this.iconType = 'path'
+  this.svg = "router";
+}
+
+function Server(data, networks) {
+  for (key in data) {
+    this[key] = data[key];
+  }
+  this.iconType = 'text';
+  this.icon = '\uf108'; // Server
+  this.networks = [];
+}
 
 horizon.network_topology = {
   model: null,
   fa_globe_glyph: '\uf0ac',
   fa_globe_glyph_width: 15,
   svg:'#topology_canvas',
+  nodes: [],
+  links: [],
+  data: [],
+  zoom: d3.behavior.zoom(),
   svg_container:'#topologyCanvasContainer',
-  post_messages:'#topologyMessages',
-  network_tmpl:{
-    small:'#topology_template > .network_container_small',
-    normal:'#topology_template > .network_container_normal'
-  },
-  router_tmpl: {
-    small:'#topology_template > .router_small',
-    normal:'#topology_template > .router_normal'
-  },
-  instance_tmpl: {
-    small:'#topology_template > .instance_small',
-    normal:'#topology_template > .instance_normal'
-  },
   balloon_tmpl : null,
   balloon_device_tmpl : null,
   balloon_port_tmpl : null,
@@ -65,12 +88,11 @@ horizon.network_topology = {
     device_name_max_size:9,
     device_name_suffix:'..'
   },
-  init:function() {
+
+
+  init:function(){
     var self = this;
-    $(self.svg_container).spin(horizon.conf.spinner_options.modal);
-    if($('#networktopology').length === 0) {
-      return;
-    }
+
     self.color = d3.scale.category10();
     self.balloon_tmpl = Hogan.compile($('#balloon_container').html());
     self.balloon_device_tmpl = Hogan.compile($('#balloon_device').html());
@@ -93,417 +115,381 @@ horizon.network_topology = {
         self.delete_balloon();
       });
 
-    $('.toggleView > .btn').click(function(){
-      self.draw_mode = $(this).data('value');
-      $('g.network').remove();
-      horizon.cookies.put('ntp_draw_mode',self.draw_mode);
-      self.data_convert();
-    });
-
-    $(window)
-      .on('message',function(e){
-        var message = $.parseJSON(e.originalEvent.data);
-        if (self.previous_message !== message.message) {
-          horizon.alert(message.type, message.message);
-          horizon.autoDismissAlerts();
-          self.previous_message = message.message;
-          self.delete_post_message(message.iframe_id);
-          self.load_network_info();
-          setTimeout(function() {
-            self.previous_message = null;
-          },10000);
-        }
-      });
-
-    self.load_network_info();
+    $("#topologyCanvasContainer").spin(horizon.conf.spinner_options.modal);
+    self.retrieve_network_info();
   },
-  load_network_info:function(){
+
+  // Get the json data about the current deployment
+  retrieve_network_info: function(){
     var self = this;
-    if($('#networktopology').length === 0) {
-      return;
-    }
     $.getJSON($('#networktopology').data('networktopology') + '?' + $.now(),
       function(data) {
-        self.model = data;
-        self.data_convert();
-        setTimeout(function(){
-          self.load_network_info();
-        }, self.reload_duration);
+        self.create_vis();
+        self.force_direction(0.05,70,-700);
+        self.load_topology(data);
+        self.force.start();
       }
     );
   },
-  select_draw_mode:function() {
-    var self = this;
-    var draw_mode = horizon.cookies.get('ntp_draw_mode');
-    if (draw_mode && (draw_mode === 'normal' || draw_mode === 'small')) {
-      self.draw_mode = draw_mode;
-    } else {
-      if (self.model.networks.length *
-        self.element_properties.normal.network_width >  $('#topologyCanvas').width()) {
-        self.draw_mode = 'small';
-      } else {
-        self.draw_mode = 'normal';
-      }
-      horizon.cookies.put('ntp_draw_mode',self.draw_mode);
-    }
-    $('.toggleView > .btn').each(function(){
-      var $this = $(this);
-      if($this.hasClass(self.draw_mode)) {
-        $this.addClass('active');
-      }
-    });
-  },
-  data_convert:function() {
-    var self = this;
-    var model = self.model;
-    $.each(model.networks, function(index, network) {
-      self.network_index[network.id] = index;
-    });
-    self.select_draw_mode();
-    var element_properties = self.element_properties[self.draw_mode];
-    self.network_height = element_properties.top_margin;
-    $.each([
-      {model:model.routers, type:'router'},
-      {model:model.servers, type:'instance'}
-    ], function(index, devices) {
-      var type = devices.type;
-      var model = devices.model;
-      $.each(model, function(index, device) {
-        device.type = type;
-        device.ports = self.select_port(device.id);
-        var hasports = (device.ports.length <= 0) ? false : true;
-        device.parent_network = (hasports) ?
-          self.select_main_port(device.ports).network_id : self.model.networks[0].id;
-        var height = element_properties.port_margin*(device.ports.length - 1);
-        device.height =
-          (self.draw_mode === 'normal' && height > element_properties.default_height) ? height :
-            element_properties.default_height;
-        device.pos_y = self.network_height;
-        device.port_height =
-          (self.draw_mode === 'small' && height > device.height) ? 1 :
-            element_properties.port_height;
-        device.port_margin =
-          (self.draw_mode === 'small' && height > device.height) ?
-            device.height/device.ports.length :
-            element_properties.port_margin;
-        self.network_height += device.height + element_properties.margin;
-      });
-    });
-    $.each(model.networks, function(index, network) {
-      network.devices = [];
-      $.each([model.routers, model.servers],function(index, devices) {
-        $.each(devices,function(index, device) {
-          if(network.id === device.parent_network) {
-            network.devices.push(device);
-          }
-        });
-      });
-    });
-    self.network_height += element_properties.top_margin;
-    self.network_height = (self.network_height > element_properties.network_min_height) ?
-      self.network_height : element_properties.network_min_height;
-    self.draw_topology();
-  },
-  draw_topology:function() {
-    var self = this;
-    $(self.svg_container).spin(false);
-    $(self.svg_container).removeClass('noinfo');
-    if (self.model.networks.length <= 0) {
-      $('g.network').remove();
-      $(self.svg_container).addClass('noinfo');
-      return;
-    }
-    var svg = d3.select(self.svg);
-    var element_properties = self.element_properties[self.draw_mode];
-    svg
-      .attr('width',self.model.networks.length*element_properties.network_width)
-      .attr('height',self.network_height);
 
-    var network = svg.selectAll('g.network')
-      .data(self.model.networks);
+  // Setup the main visualisation
+  create_vis: function(){
+    var self = this;
+    $("#topologyCanvasContainer").html('');
 
-    var network_enter = network.enter()
-      .append('g')
-      .attr('class','network')
-      .each(function(d,i){
-        this.appendChild(d3.select(self.network_tmpl[self.draw_mode]).node().cloneNode(true));
-        var $this = d3.select(this).select('.network-rect');
-        if (d.url) {
-          $this
-            .on('mouseover',function(){
-              $this.transition().style('fill', function() {
-                return d3.rgb(self.get_network_color(d.id)).brighter(0.5);
-              });
-            })
-            .on('mouseout',function(){
-              $this.transition().style('fill', function() {
-                return self.get_network_color(d.id);
-              });
-            })
-            .on('click',function(){
-              window.location.href = d.url;
-            });
-        } else {
-          $this.classed('nourl', true);
+    // Main svg
+    self.outer_group = d3.select("#topologyCanvasContainer").append("svg")
+      .attr("width", "100%")
+      .attr("height", "700")
+      .attr("pointer-events", "all")
+      .append("g")
+      .call(self.zoom
+        .scaleExtent([0.1,1.5])
+        .on("zoom", function(){
+            self.vis.attr("transform", "translate("+d3.event.translate+")scale("+
+              self.zoom.scale()+")")
+          })
+        );
+
+    // Background for capturing mouse events
+    self.outer_group.append("rect")
+      .attr("width", "100%")
+      .attr("height", "100%")
+      .attr("fill", "white");
+
+    // svg wrapper for nodes to sit on
+    self.vis = self.outer_group.append("g");
+  },
+
+  convex_hulls: function(nodes){
+    var hulls = {};
+    var networkids = {};
+    var k = 0;
+    var offset = 40;
+
+    while( k < nodes.length){
+      var n = nodes[k];
+      if (n.data instanceof Server){
+        var net, _i, _len, _ref, _h;
+        _ref = n.data.networks;
+        for (_i = 0, _len = _ref.length; _i < _len; _i++){
+          net = _ref[_i];
+          _h = hulls[net.id] || (hulls[net.id] = []);
+          _h.push([n.x - offset, n.y - offset]);
+          _h.push([n.x - offset, n.y + offset]);
+          _h.push([n.x + offset, n.y - offset]);
+          _h.push([n.x + offset, n.y + offset]);
         }
-      });
+      } else if (n.data instanceof Network){
+        var _h;
+        var net = n.data;
+        networkids[net.id] = n
+        _h = hulls[net.id] || (hulls[net.id] = []);
+        _h.push([n.x - offset, n.y - offset]);
+        _h.push([n.x - offset, n.y + offset]);
+        _h.push([n.x + offset, n.y - offset]);
+        _h.push([n.x + offset, n.y + offset]);
 
-    network
-      .attr('id',function(d) { return 'id_' + d.id; })
-      .attr('transform',function(d,i){
-        return 'translate(' + element_properties.network_width * i + ',' + 0 + ')';
-      })
-      .select('.network-rect')
-      .attr('height', function(d) { return self.network_height; })
-      .style('fill', function(d) { return self.get_network_color(d.id); });
-    network
-      .select('.network-name')
-      .attr('x', function(d) { return self.network_height/2; })
-      .text(function(d) { return d.name; });
-    network
-      .select('.network-cidr')
-      .attr('x', function(d) {
-        var padding = isExternalNetwork(d) ? self.fa_globe_glyph_width : 0;
-        return self.network_height - self.element_properties.cidr_margin -
-          padding;
-      })
-      .text(function(d) {
-        var cidr = $.map(d.subnets,function(n, i){
-          return n.cidr;
-        });
-        return cidr.join(', ');
-      });
-    function isExternalNetwork(d) {
-      return d['router:external'];
+      }
+      ++k;
     }
-    network
-      .select('.network-type')
-      .text(function(d) {
-        return isExternalNetwork(d) ? self.fa_globe_glyph : '';
-      })
-      .attr('x', function(d) {
-        return self.network_height - self.element_properties.cidr_margin;
-      });
+    var hullset = [];
+    for (i in hulls){
+      hullset.push({group: i, network: networkids[i], path: d3.geom.hull(hulls[i])});
+    }
+
+    return hullset;
+  },
+
+  // Setup the force direction
+  force_direction: function(grav, linkdist, ch){
+    var self = this;
+
+    //network
+      //.attr('id',function(d) { return 'id_' + d.id; })
+      //.attr('transform',function(d,i){
+        //return 'translate(' + element_properties.network_width * i + ',' + 0 + ')';
+      //})
+      //.select('.network-rect')
+      //.attr('height', function(d) { return self.network_height; })
+      //.style('fill', function(d) { return self.get_network_color(d.id); });
+    //network
+      //.select('.network-name')
+      //.attr('x', function(d) { return self.network_height/2; })
+      //.text(function(d) { return d.name; });
+    //network
+      //.select('.network-cidr')
+      //.attr('x', function(d) {
+        //var padding = isExternalNetwork(d) ? self.fa_globe_glyph_width : 0;
+        //return self.network_height - self.element_properties.cidr_margin -
+          //padding;
+      //})
+      //.text(function(d) {
+        //var cidr = $.map(d.subnets,function(n, i){
+          //return n.cidr;
+        //});
+        //return cidr.join(', ');
+      //});
+    //function isExternalNetwork(d) {
+      //return d['router:external'];
+    //}
+    //network
+      //.select('.network-type')
+      //.text(function(d) {
+        //return isExternalNetwork(d) ? self.fa_globe_glyph : '';
+      //})
+      //.attr('x', function(d) {
+        //return self.network_height - self.element_properties.cidr_margin;
+      //});
 
     $('[data-toggle="tooltip"]').tooltip({container: 'body'});
+    self.curve = d3.svg.line()
+      .interpolate("cardinal-closed")
+      .tension(.85);
+    self.fill = d3.scale.category20();
 
-    network.exit().remove();
+    self.force = d3.layout.force()
+      .gravity(grav)
+      .linkDistance(linkdist)
+      .charge(ch)
+      .size([$("#topologyCanvasContainer").width(),$("#topologyCanvasContainer").height()])
+      .nodes(self.nodes)
+      .links(self.links)
+      .on("tick", function(e){
+        self.vis.selectAll("g.node")
+          .attr("transform", function(d){
+            return "translate("+d.x+","+d.y+")";
+          })
 
-    var device = network.selectAll('g.device')
-      .data(function(d) { return d.devices; });
+        self.vis.selectAll("line.link")
+          .attr("x1", function(d){ return d.source.x; })
+          .attr("y1", function(d){ return d.source.y; })
+          .attr("x2", function(d){ return d.target.x; })
+          .attr("y2", function(d){ return d.target.y; })
 
-    var device_enter = device.enter()
-      .append("g")
-      .attr('class','device')
-      .each(function(d,i){
-        var device_template = self[d.type + '_tmpl'][self.draw_mode];
-        this.appendChild(d3.select(device_template).node().cloneNode(true));
+        self.vis.selectAll("path.hulls")
+          .data(self.convex_hulls(self.vis.selectAll("g.node").data()))
+            .attr("d", function(d){
+              return self.curve(d.path);
+            })
+          .enter().insert("path", "g")
+            .attr("class", "hulls")
+            .style("fill", function(d){
+              return self.fill(d.group);
+            })
+            .style("stroke", function(d){
+              return self.fill(d.group);
+            })
+            .style("stroke-linejoin", "round")
+            .style("stroke-width", 10)
+            .style("opacity", .2);
       });
-
-    device_enter
-      .on('mouseenter',function(d){
-      var $this = $(this);
-      self.show_balloon(d,$this);
-    })
-      .on('click',function(){
-        d3.event.stopPropagation();
-      });
-
-    device
-      .attr('id',function(d) { return 'id_' + d.id; })
-      .attr('transform',function(d,i){
-        return 'translate(' + element_properties.device_x + ',' + d.pos_y  + ')';
-      })
-      .select('.frame')
-      .attr('height',function(d) { return d.height; });
-    device
-      .select('.texts_bg')
-      .attr('y',function(d) {
-        return element_properties.texts_bg_y + d.height - element_properties.default_height;
-      });
-    device
-      .select('.type')
-      .attr('y',function(d) {
-        return element_properties.type_y + d.height - element_properties.default_height;
-      });
-    device
-      .select('.name')
-      .text(function(d) { return self.string_truncate(d.name); });
-    device.each(function(d) {
-      if (d.status === 'BUILD') {
-        d3.select(this).classed('loading',true);
-      } else if (d.task === 'deleting') {
-        d3.select(this).classed('loading',true);
-        if ('bl_' + d.id === self.balloon_id) {
-          self.delete_balloon();
-        }
-      } else {
-        d3.select(this).classed('loading',false);
-        if ('bl_' + d.id === self.balloon_id) {
-          var $this = $(this);
-          self.show_balloon(d,$this);
-        }
-      }
-    });
-
-    device.exit().each(function(d){
-      if ('bl_' + d.id === self.balloon_id) {
-        self.delete_balloon();
-      }
-    }).remove();
-
-    var port = device.select('g.ports')
-      .selectAll('g.port')
-      .data(function(d) { return d.ports; });
-
-    var port_enter = port.enter()
-      .append('g')
-      .attr('class','port')
-      .attr('id',function(d) { return 'id_' + d.id; });
-
-    port_enter
-      .append('line')
-      .attr('class','port_line');
-
-    port_enter
-      .append('text')
-      .attr('class','port_text');
-
-    device.select('g.ports').each(function(d,i){
-      this._portdata = {};
-      this._portdata.ports_length = d.ports.length;
-      this._portdata.parent_network = d.parent_network;
-      this._portdata.device_height = d.height;
-      this._portdata.port_height = d.port_height;
-      this._portdata.port_margin = d.port_margin;
-      this._portdata.left = 0;
-      this._portdata.right = 0;
-      $(this).mouseenter(function(e){
-        e.stopPropagation();
-      });
-    });
-
-    port.each(function(d,i){
-      var index_diff = self.get_network_index(this.parentNode._portdata.parent_network) -
-        self.get_network_index(d.network_id);
-      this._index_diff = index_diff = (index_diff >= 0)? ++index_diff : index_diff;
-      this._direction = (this._index_diff < 0)? 'right' : 'left';
-      this._index  = this.parentNode._portdata[this._direction] ++;
-
-    });
-
-    port.attr('transform',function(d,i){
-      var x = (this._direction === 'left') ? 0 : element_properties.device_width;
-      var ports_length = this.parentNode._portdata[this._direction];
-      var distance = this.parentNode._portdata.port_margin;
-      var y = (this.parentNode._portdata.device_height -
-        (ports_length -1)*distance)/2 + this._index*distance;
-      return 'translate(' + x + ',' + y + ')';
-    });
-
-    port
-      .select('.port_line')
-      .attr('stroke-width',function(d,i) {
-        return this.parentNode.parentNode._portdata.port_height;
-      })
-      .attr('stroke', function(d, i) {
-        return self.get_network_color(d.network_id);
-      })
-      .attr('x1',0).attr('y1',0).attr('y2',0)
-      .attr('x2',function(d,i) {
-        var parent = this.parentNode;
-        var width = (Math.abs(parent._index_diff) - 1)*element_properties.network_width +
-          element_properties.port_width;
-        return (parent._direction === 'left') ? -1*width : width;
-      });
-
-    port
-      .select('.port_text')
-      .attr('x',function(d) {
-        var parent = this.parentNode;
-        if (parent._direction === 'left') {
-          d3.select(this).classed('left',true);
-          return element_properties.port_text_margin.x*-1;
-        } else {
-          d3.select(this).classed('left',false);
-          return element_properties.port_text_margin.x;
-        }
-      })
-      .attr('y',function(d) {
-        return element_properties.port_text_margin.y;
-      })
-      .text(function(d) {
-        var ip_label = [];
-        $.each(d.fixed_ips, function() {
-          ip_label.push(this.ip_address);
-        });
-        return ip_label.join(',');
-      });
-
-    port.exit().remove();
   },
-  get_network_color: function(network_id) {
-    return this.color(this.get_network_index(network_id));
-  },
-  get_network_index: function(network_id) {
-    return this.network_index[network_id];
-  },
-  select_port: function(device_id){
-    return $.map(this.model.ports,function(port, index){
-      if (port.device_id === device_id) {
-        return port;
-      }
-    });
-  },
-  select_main_port: function(ports){
-    var _self = this;
-    var main_port_index = 0;
-    var MAX_INT = 4294967295;
-    var min_port_length = MAX_INT;
-    $.each(ports, function(index, port){
-      var port_length = _self.sum_port_length(port.network_id, ports);
-      if(port_length < min_port_length){
-        min_port_length = port_length;
-        main_port_index = index;
-      }
-    });
-    return ports[main_port_index];
-  },
-  sum_port_length: function(network_id, ports){
+
+  // Create a new node
+  new_node: function(data){
     var self = this;
-    var sum_port_length = 0;
-    var base_index = self.get_network_index(network_id);
-    $.each(ports, function(index, port){
-      sum_port_length += base_index - self.get_network_index(port.network_id);
-    });
-    return sum_port_length;
-  },
-  string_truncate: function(string) {
-    var self = this;
-    var str = string;
-    var max_size = self.element_properties.device_name_max_size;
-    var suffix = self.element_properties.device_name_suffix;
-    var bytes = 0;
-    for (var i = 0;  i < str.length; i++) {
-      bytes += str.charCodeAt(i) <= 255 ? 1 : 2;
-      if (bytes > max_size) {
-        str = str.substr(0, i) + suffix;
+    var data = {data: data};
+    self.nodes.push(data);
+
+    var node = self.vis.selectAll("g.node").data(self.nodes);
+    var node_enter = node.enter().append("g")
+      .attr("class", "node")
+      .style("fill", "white")
+      .call(self.force.drag)
+      .on("click", function(d){
+        console.log(d)
+      })
+      .on("dblclick", function(d){
+        //window.location = d.data.url;
+        if(d.data instanceof Network){
+          filter_node = function(obj){
+            return function(d, i){
+              return obj === d.data;
+            }
+          }
+        if(!d.data.collapsed){
+          var vmCount = 0;
+        }
+
+        }
+      });
+
+    node_enter.append("circle")
+      .attr('class', 'frame')
+      .attr("r", function(d){
+        switch(Object.getPrototypeOf(d.data)){
+          case ExternalNetwork.prototype:
+            return 35;
+          case Network.prototype:
+            return 30;
+          case Router.prototype:
+            return 25;
+          case Server.prototype:
+            return 20;
+        }
+      })
+      .style("fill", "white")
+      .style("stroke", "black")
+      .style("stroke-width", 3);
+
+    switch( data.data.iconType ) {
+      case 'text':
+        node_enter.append('text')
+          .style("fill", "black")
+          .style('font', '20px FontAwesome')
+          .attr('text-anchor', 'middle')
+          .attr('dominant-baseline', 'central')
+          .text(function(d){ return d.data.icon })
+          .attr("transform", function(d){
+            switch(Object.getPrototypeOf(d.data)){
+              case ExternalNetwork.prototype:
+                return "scale(2.5)";
+              case Network.prototype:
+                return "scale(1.5)";
+              case Router.prototype:
+                return "scale(1.2)";
+              case Server.prototype:
+                return "scale(1)";
+            }
+          });
+        break;
+      case 'path':
+        node_enter.append("path")
+          .attr("class", "svgpath")
+          .style("fill", "black")
+          .attr("d", function(d){ return self.svgs(d.data.svg); })
+          .attr("transform", function(d){
+            switch(Object.getPrototypeOf(d.data)){
+              case ExternalNetwork.prototype:
+                return "scale(2)translate(-16,-16)";
+              case Network.prototype:
+                return "scale(1.5)translate(-16,-16)";
+              case Router.prototype:
+                return "scale(1.2)translate(-16,-15)";
+              case Server.prototype:
+                return "scale(1)translate(-16,-16)";
+            }
+          });
         break;
       }
-    }
-    return str;
+
+    node_enter.on('mouseenter', function(d) {
+      if ((Object.getPrototypeOf(d.data) == Router.prototype) || (Object.getPrototypeOf(d.data) == Server.prototype)) {
+        var $this = $(this);
+        self.show_balloon(d.data,$this);
+      }
+    });
   },
+
+  new_link: function(source, target){
+    var self = this;
+    self.links.push({source: source, target: target})
+    var line = self.vis.selectAll("line.link").data(self.links);
+    line.enter().insert("line", "g.node")
+      .attr("class", "link")
+      .attr("x1", function(d){ return d.source.x; })
+      .attr("y1", function(d){ return d.source.y; })
+      .attr("x2", function(d){ return d.target.x; })
+      .attr("y2", function(d){ return d.target.y; })
+      .style("stroke", "black")
+      .style("stroke-width", 2);
+  },
+
+  find_by_id: function(id) {
+    var self = this;
+    var obj, _i, _len, _ref, _node;
+    _ref = self.vis.selectAll("g.node").data();
+    for(_i = 0, _len = _ref.length; _i < _len; _i++) {
+      obj = _ref[_i];
+      if (obj.data.id == id) {
+        return obj;
+      }
+    }
+  },
+
+  load_topology: function(data){
+    var self = this;
+    self.data = {};
+
+    //network_ids = {}
+    //var q;
+    //for (q = 0; q < data.ports.length; q++) {
+      //if (data.ports[q].device_owner == 'compute:nova') {
+        //network_ids[data.ports[q].device_id] = data.ports[]
+      //}
+    //}
+
+    // Networks
+    self.data.networks = {}
+    var net, _i, _netlen, _netref;
+    _netref = data.networks;
+    for (_i = 0, _netlen = _netref.length; _i < _netlen; _i++) {
+      net = _netref[_i];
+      var network = null;
+      if(net['router:external'] == true){
+        network = new ExternalNetwork(net);
+      } else {
+        network = new Network(net);
+      }
+
+      self.data.networks[network.id] = network;
+      self.new_node(network);
+    }
+
+    // Routers
+    self.data.routers = {}
+    var rou, _j, _roulen, _rouref;
+    _rouref = data.routers;
+    for (_j = 0, _roulen = _rouref.length; _j < _roulen; _j++) {
+      rou = _rouref[_j];
+      var router = new Router(rou);
+      self.data.routers[router.id] = router;
+      self.new_node(router);
+    }
+
+    // Servers
+    self.data.servers = {}
+    var ser, _k, _serlen, _serref;
+    _serref = data.servers;
+    for (_k = 0, _serlen = _serref.length; _k < _serlen; _k++) {
+      ser = _serref[_k];
+      var server = new Server(ser);
+      self.data.servers[server.id] = server;
+      self.new_node(server);
+    }
+
+    var port, _l, _portlen, _portref;
+    _portref = data.ports;
+    for (_l = 0, _portlen = _portref.length; _l < _portlen; _l++) {
+      port = _portref[_l];
+      console.log(port)
+      var device = self.find_by_id(port.device_id)
+      var network = self.find_by_id(port.network_id)
+      if (device != undefined && network != undefined){
+        if(port.device_owner == "compute:nova"){
+          device.data.networks.push(network.data);
+        }
+        self.new_link(self.find_by_id(port.device_id), self.find_by_id(port.network_id))
+      }
+    }
+  },
+
   delete_device: function(type, device_id) {
     var self = this;
     var message = {id:device_id};
     self.post_message(device_id,type,message);
   },
+
   delete_port: function(router_id, port_id) {
     var self = this;
     var message = {id:port_id};
     self.post_message(port_id, 'router/' + router_id + '/', message);
   },
-  show_balloon:function(d,element) {
+
+  show_balloon: function(d,element) {
+    console.log('SHOWING BALLOON');
+    console.log(d);
     var self = this;
     var element_properties = self.element_properties[self.draw_mode];
     if (self.balloon_id) {
@@ -514,36 +500,36 @@ horizon.network_topology = {
     var port_tmpl = self.balloon_port_tmpl;
     var balloon_id = 'bl_' + d.id;
     var ports = [];
-    $.each(d.ports,function(i, port){
-      var object = {};
-      object.id = port.id;
-      object.router_id = port.device_id;
-      object.url = port.url;
-      object.port_status = port.status;
-      object.port_status_css = (port.status === "ACTIVE")? 'active' : 'down';
-      var ip_address = '';
-      try {
-        ip_address = port.fixed_ips[0].ip_address;
-      }catch(e){
-        ip_address = gettext('None');
-      }
-      var device_owner = '';
-      try {
-        device_owner = port.device_owner.replace('network:','');
-      }catch(e){
-        device_owner = gettext('None');
-      }
-      object.ip_address = ip_address;
-      object.device_owner = device_owner;
-      object.is_interface = (device_owner === 'router_interface');
-      ports.push(object);
-    });
+    //$.each(d.ports,function(i, port){
+      //var object = {};
+      //object.id = port.id;
+      //object.router_id = port.device_id;
+      //object.url = port.url;
+      //object.port_status = port.status;
+      //object.port_status_css = (port.status === "ACTIVE")? 'active' : 'down';
+      //var ip_address = '';
+      //try {
+        //ip_address = port.fixed_ips[0].ip_address;
+      //}catch(e){
+        //ip_address = gettext('None');
+      //}
+      //var device_owner = '';
+      //try {
+        //device_owner = port.device_owner.replace('network:','');
+      //}catch(e){
+        //device_owner = gettext('None');
+      //}
+      //object.ip_address = ip_address;
+      //object.device_owner = device_owner;
+      //object.is_interface = (device_owner === 'router_interface');
+      //ports.push(object);
+    //});
     var html_data = {
       balloon_id:balloon_id,
       id:d.id,
       url:d.url,
       name:d.name,
-      type:d.type,
+      //type:d.type,
       delete_label: gettext("Delete"),
       status:d.status,
       status_class:(d.status === "ACTIVE")? 'active' : 'down',
@@ -554,7 +540,7 @@ horizon.network_topology = {
       open_console_label: gettext("Open Console"),
       view_details_label: gettext("View Details")
     };
-    if (d.type === 'router') {
+    if (d instanceof Router) {
       html_data.delete_label = gettext("Delete Router");
       html_data.view_details_label = gettext("View Router Details");
       html_data.port = ports;
@@ -564,7 +550,7 @@ horizon.network_topology = {
         table1:device_tmpl,
         table2:(ports.length > 0) ? port_tmpl : null
       });
-    } else if (d.type === 'instance') {
+    } else if (d instanceof Server) {
       html_data.delete_label = gettext("Terminate Instance");
       html_data.view_details_label = gettext("View Instance Details");
       html_data.console_id = d.id;
@@ -577,6 +563,7 @@ horizon.network_topology = {
     }
     $(self.svg_container).append(html);
     var device_position = element.find('.frame');
+    console.log(device_position);
     var x = device_position.position().left +
       element_properties.device_width +
       element_properties.balloon_margin.x;
@@ -588,7 +575,8 @@ horizon.network_topology = {
     })
       .show();
     var $balloon = $('#' + balloon_id);
-    if ($balloon.offset().left + $balloon.outerWidth() > $(window).outerWidth()) {
+    console.log($balloon)
+    if (device_position.position().left + $balloon.outerWidth() > $(window).outerWidth()) {
       $balloon
         .css({
           'left': 0 + 'px'
@@ -611,6 +599,7 @@ horizon.network_topology = {
     });
     self.balloon_id = balloon_id;
   },
+
   delete_balloon:function() {
     var self = this;
     if(self.balloon_id) {
@@ -618,19 +607,13 @@ horizon.network_topology = {
       self.balloon_id = null;
     }
   },
-  post_message: function(id,url,message) {
-    var self = this;
-    var iframe_id = 'ifr_' + id;
-    var iframe = $('<iframe width="500" height="300" />')
-      .attr('id',iframe_id)
-      .attr('src',url)
-      .appendTo(self.post_messages);
-    iframe.on('load',function() {
-      $(this).get(0).contentWindow.postMessage(
-        JSON.stringify(message, null, 2), '*');
-    });
-  },
-  delete_post_message: function(id) {
-    $('#' + id).remove();
+
+  svgs: function(name){
+    switch(name){
+      case 'router':
+        return "m 26.628571,16.08 -8.548572,0 0,8.548571 2.08,-2.079998 6.308572,6.30857 4.38857,-4.388572 -6.308571,-6.30857 z m -21.2571429,-4.159999 8.5485709,0 0,-8.5485723 -2.08,2.08 L 5.5314281,-0.85714307 1.1428571,3.5314287 7.4514281,9.84 z m -3.108571,7.268571 0,8.548571 8.5485709,0 L 8.7314281,25.657144 15.039999,19.325715 10.674285,14.96 4.3428571,21.268573 z M 29.737142,8.8114288 l 0,-8.54857147 -8.548572,0 2.08,2.07999987 -6.308571,6.3085716 4.388572,4.3885722 6.308571,-6.3085723 z"
+      default:
+        return ""
+    }
   }
-};
+}
