@@ -473,6 +473,8 @@ horizon.network_topology = {
         self.new_link(self.find_by_id(port.device_id), self.find_by_id(port.network_id))
       }
     }
+
+    console.log(self.data);
   },
 
   delete_device: function(type, device_id) {
@@ -555,6 +557,7 @@ horizon.network_topology = {
       html_data.view_details_label = gettext("View Instance Details");
       html_data.console_id = d.id;
       html_data.console = d.console;
+      html_data.host = d.host;
       html = balloon_tmpl.render(html_data,{
         table1:device_tmpl
       });

@@ -162,8 +162,10 @@ class JSONView(View):
         data = [{'name': server.name,
                  'status': server.status,
                  'console': console,
+                 'host': getattr(server, 'OS-EXT-SRV-ATTR:host'),
                  'task': getattr(server, 'OS-EXT-STS:task_state'),
                  'id': server.id} for server in servers]
+
         self.add_resource_url('horizon:project:instances:detail', data)
         return data
 
